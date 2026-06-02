@@ -418,6 +418,8 @@ bot.onText(/^\/(me|myself)$/, async (msg) => {
     const sisaBulk = LIMIT_BULK - user.bulkCount;
     const sisaBulkDisplay = sisaBulk < 0 ? 0 : sisaBulk;
 
+    const minsToReset = 60 - new Date().getMinutes();
+
     const profileText = `👤 <b>Profil Hunter Anda</b>\n\n` +
         `🆔 <b>ID Anda:</b> <code>${userId}</code>\n` +
         `👥 <b>Total Referral:</b> ${user.referralCount || 0} orang\n` +
@@ -426,7 +428,7 @@ bot.onText(/^\/(me|myself)$/, async (msg) => {
         `🔍 /cari: <b>${sisaCari}</b> dari ${LIMIT_CARI}\n` +
         `🚀 /bulk: <b>${sisaBulkDisplay}</b> dari ${LIMIT_BULK}\n\n` +
         `🎁 <b>Bonus Kuota Referral:</b> ${user.bonusBulk || 0} bulk\n\n` +
-        `<i>*Kuota akan keriset setiap jam. Bonus Referral bersifat permanen dan tidak akan keriset.</i>`;
+        `<i>*Kuota akan keriset setiap jam (reset berikutnya dalam <b>${minsToReset} menit</b>). Bonus Referral bersifat permanen.</i>`;
         
     bot.sendMessage(chatId, profileText, { parse_mode: 'HTML' });
 });
@@ -520,10 +522,12 @@ bot.onText(/^\/broadcast ([\s\S]+)/, async (msg, match) => {
 // Fitur Cari 1 Username
 bot.onText(/^\/cari (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
-    if (!(await isSubscribed(chatId, msg.from.id))) return;
+    const userId = msg.from.id;
+    if (!(await isSubscribed(chatId, userId))) return;
 
-    if (!checkLimit(msg.from.id, 'cari')) {
-        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum pengecekan tunggal per jam (${LIMIT_CARI}x).\n\nSilakan tunggu hingga jam berikutnya atau pertimbangkan fitur Premium di masa mendatang!`, { parse_mode: 'HTML' });
+    if (!checkLimit(userId, 'cari')) {
+        const minsToReset = 60 - new Date().getMinutes();
+        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum pengecekan tunggal per jam (${LIMIT_CARI}x).\n\nSilakan tunggu <b>${minsToReset} menit lagi</b> hingga jam berikutnya atau pertimbangkan fitur Premium di masa mendatang!`, { parse_mode: 'HTML' });
     }
 
     let username = match[1].trim().replace('@', '');
@@ -607,7 +611,8 @@ bot.onText(/^\/bulk(?:\s+(.+))?$/, async (msg, match) => {
     }
 
     if (!checkLimit(userId, 'bulk')) {
-        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu hingga jam berikutnya.`, { parse_mode: 'HTML' });
+        const minsToReset = 60 - new Date().getMinutes();
+        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu <b>${minsToReset} menit lagi</b> hingga reset jam berikutnya.`, { parse_mode: 'HTML' });
     }
 
     // Jika ada text tambahan, proses username-nya
@@ -644,7 +649,8 @@ bot.on('document', async (msg) => {
     }
 
     if (!checkLimit(userId, 'bulk')) {
-        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu hingga jam berikutnya.`, { parse_mode: 'HTML' });
+        const minsToReset = 60 - new Date().getMinutes();
+        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu <b>${minsToReset} menit lagi</b> hingga reset jam berikutnya.`, { parse_mode: 'HTML' });
     }
 
     bot.sendMessage(chatId, '📥 Mendownload file dan memulai pengecekan otomatis...');
@@ -696,7 +702,8 @@ bot.on('text', async (msg) => {
     }
 
     if (!checkLimit(userId, 'bulk')) {
-        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu hingga jam berikutnya.`, { parse_mode: 'HTML' });
+        const minsToReset = 60 - new Date().getMinutes();
+        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu <b>${minsToReset} menit lagi</b> hingga reset jam berikutnya.`, { parse_mode: 'HTML' });
     }
 
     activeBulkUsers.add(userId);
