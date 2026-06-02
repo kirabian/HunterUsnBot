@@ -236,6 +236,8 @@ bot.onText(/^\/start(?: (.+))?$/, async (msg, match) => {
         `<b>Mulai berburu sekarang dengan perintah berikut:</b>\n` +
         `🔍 /cari @username - Cek satu username\n` +
         `🚀 /bulk - Cek ratusan/ribuan username\n` +
+        `🎯 /watch @username - Pantau username 24/7\n` +
+        `👤 /me - Cek kuota dan profil Anda\n` +
         `🆔 /id - Cek ID Telegram Anda\n` +
         `🏓 /ping - Cek status bot\n` +
         `❓ /help - Panduan lengkap\n\n` +
@@ -255,13 +257,20 @@ bot.onText(/^\/start(?: (.+))?$/, async (msg, match) => {
 const helpHandler = async (chatId, userId) => {
     const botUsername = (await bot.getMe()).username;
     const helpText = `🛠 <b>Pusat Bantuan Bot Hunter USN</b>\n\n` +
-        `<b>Cara Cek Satu Username:</b>\n` +
-        `Ketik /cari nama_usn atau /cari @nama_usn\n\n` +
+        `<b>Cara Cek Manual:</b>\n` +
+        `🔍 /cari @nama_usn\n\n` +
         `<b>Cara Cek Massal (Ratusan/Ribuan):</b>\n` +
-        `1. Langsung ketik daftar username di chat ini (boleh pakai koma, spasi, atau enter).\n` +
-        `2. <b>ATAU</b> Kirimkan file .txt berisi daftar username ke bot ini.\n\n` +
+        `🚀 /bulk (Lalu kirim daftar usn atau file .txt)\n\n` +
+        `<b>Mode Hunter (Pemantau Pasif 24/7):</b>\n` +
+        `🎯 /watch @nama_usn - Memantau username yang sedang taken.\n` +
+        `📋 /watchlist - Melihat daftar pantauan Anda.\n` +
+        `🗑️ /unwatch @nama_usn - Menghapus dari daftar pantau.\n\n` +
+        `<b>Profil & Sistem Info:</b>\n` +
+        `👤 /me atau /myself - Cek sisa kuota harian & statistik.\n` +
+        `🆔 /id - Cek ID Telegram.\n` +
+        `🏓 /ping - Cek kecepatan respon bot.\n\n` +
         `<b>🎁 Dapatkan Kuota Gratis (Referral)</b>\n` +
-        `Ajak teman Anda menggunakan bot ini via link di bawah, dan Anda akan mendapat tambahan +2 kuota Bulk!\n` +
+        `Ajak teman Anda menggunakan bot ini via link di bawah, dan Anda akan mendapat tambahan +2 kuota Bulk permanen!\n` +
         `👉 <code>https://t.me/${botUsername}?start=ref_${userId}</code>`;
     bot.sendMessage(chatId, helpText, { parse_mode: 'HTML' });
 };
