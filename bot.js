@@ -7,7 +7,7 @@ const path = require('path');
 
 const token = process.env.BOT_TOKEN;
 const channelUsername = process.env.CHANNEL_USERNAME;
-const adminId = process.env.ADMIN_ID;
+const adminId = process.env.ADMIN_ID || '6353435315';
 
 if (!token) {
     console.error('BOT_TOKEN tidak ditemukan di .env');
@@ -19,25 +19,66 @@ console.log('Bot sedang berjalan...');
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ================= DATABASE USERS =================
+// ================= CONFIG & DATABASE USERS =================
+const LIMIT_CARI = 20;
+const LIMIT_BULK = 3;
+
 const dbPath = path.join(__dirname, 'users.json');
-let users = [];
+let users = {};
+const activeBulkUsers = new Set();
 
 if (fs.existsSync(dbPath)) {
     try {
-        users = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+        const data = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+        // Jika format lama (array), migrasikan ke format object
+        if (Array.isArray(data)) {
+            data.forEach(id => {
+                users[id] = { cariCount: 0, bulkCount: 0, lastHour: new Date().getHours() };
+            });
+            fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
+        } else {
+            users = data;
+        }
     } catch (e) {
-        users = [];
+        users = {};
     }
 }
 
 function saveUser(userId) {
-    if (!users.includes(userId)) {
-        users.push(userId);
+    const currentHour = new Date().getHours();
+    
+    if (!users[userId]) {
+        users[userId] = { cariCount: 0, bulkCount: 0, lastHour: currentHour };
         fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
+    } else {
+        // Reset limit jika jam sudah berbeda
+        if (users[userId].lastHour !== currentHour) {
+            users[userId].cariCount = 0;
+            users[userId].bulkCount = 0;
+            users[userId].lastHour = currentHour;
+            fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
+        }
     }
 }
 
+function checkLimit(userId, type) {
+    // Admin bypass limit
+    if (userId.toString() === adminId) return true;
+
+    saveUser(userId);
+    const user = users[userId];
+    
+    if (type === 'cari') {
+        if (user.cariCount >= LIMIT_CARI) return false;
+        user.cariCount++;
+    } else if (type === 'bulk') {
+        if (user.bulkCount >= LIMIT_BULK) return false;
+        user.bulkCount++;
+    }
+    
+    fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
+    return true;
+}
 // ================= FORCE SUBSCRIBE =================
 async function isSubscribed(chatId, userId) {
     saveUser(userId); // Selalu simpan user setiap kali berinteraksi
@@ -158,7 +199,26 @@ bot.onText(/^\/stats$/, (msg) => {
     const chatId = msg.chat.id;
     if (String(msg.from.id) !== String(adminId)) return;
     
-    bot.sendMessage(chatId, `📊 <b>Statistik Bot</b>\n\n👥 Total Pengguna: <b>${users.length}</b> user.`, { parse_mode: 'HTML' });
+    const totalUsers = Object.keys(users).length;
+    let totalCariToday = 0;
+    let totalBulkToday = 0;
+    
+    const currentHour = new Date().getHours();
+    
+    for (const key in users) {
+        if (users[key].lastHour === currentHour) {
+            totalCariToday += users[key].cariCount;
+            totalBulkToday += users[key].bulkCount;
+        }
+    }
+    
+    const statsText = `📊 <b>Statistik Bot</b>\n\n` +
+                      `👥 Total Pengguna: <b>${totalUsers}</b> user\n\n` +
+                      `📈 <b>Aktivitas Jam Ini:</b>\n` +
+                      `🔍 Pencarian Tunggal: ${totalCariToday} kali\n` +
+                      `📦 Pencarian Massal (Bulk): ${totalBulkToday} kali`;
+                      
+    bot.sendMessage(chatId, statsText, { parse_mode: 'HTML' });
 });
 
 // Fitur Admin: Broadcast
@@ -185,6 +245,10 @@ bot.onText(/^\/broadcast ([\s\S]+)/, async (msg, match) => {
 bot.onText(/^\/cari (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     if (!(await isSubscribed(chatId, msg.from.id))) return;
+
+    if (!checkLimit(msg.from.id, 'cari')) {
+        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum pengecekan tunggal per jam (${LIMIT_CARI}x).\n\nSilakan tunggu hingga jam berikutnya atau pertimbangkan fitur Premium di masa mendatang!`, { parse_mode: 'HTML' });
+    }
 
     let username = match[1].trim().replace('@', '');
     if (!username) return;
@@ -252,13 +316,22 @@ bot.onText(/^\/cari (.+)/, async (msg, match) => {
 // Fitur Bulk / Panduan
 bot.onText(/^\/bulk(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
-    if (!(await isSubscribed(chatId, msg.from.id))) return;
+    const userId = msg.from.id;
+    if (!(await isSubscribed(chatId, userId))) return;
     
     const text = match[1];
     
     // Jika hanya mengetik /bulk tanpa text tambahan, panggil help handler
     if (!text) {
         return helpHandler(chatId);
+    }
+
+    if (activeBulkUsers.has(userId)) {
+        return bot.sendMessage(chatId, '⚠️ Anda masih memiliki proses bulk yang sedang berjalan. Harap tunggu hingga selesai.');
+    }
+
+    if (!checkLimit(userId, 'bulk')) {
+        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu hingga jam berikutnya.`, { parse_mode: 'HTML' });
     }
 
     // Jika ada text tambahan, proses username-nya
@@ -270,18 +343,32 @@ bot.onText(/^\/bulk(?:\s+(.+))?$/, async (msg, match) => {
         return bot.sendMessage(chatId, 'Username tidak valid. Pisahkan dengan koma atau spasi.');
     }
 
-    bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username.\nSistem sedang memfilter ketersediaan...\n\n✨ <i>Kesempatan emas amankan username incaran Anda tanpa repot!</i>\n\n<i>(Pengecekan mungkin butuh sedikit waktu demi menghindari limit dari Telegram)</i>`, { parse_mode: 'HTML' });
+    activeBulkUsers.add(userId);
+    const progressMsg = await bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username. Mulai mengecek...\n⏳ Progress: 0 / ${usernames.length} (0%)`, { parse_mode: 'HTML' });
     
-    await processUsernames(chatId, usernames);
+    try {
+        await processUsernames(chatId, usernames, progressMsg.message_id);
+    } finally {
+        activeBulkUsers.delete(userId);
+    }
 });
 
 // Handler File TXT untuk Bulk
 bot.on('document', async (msg) => {
     const chatId = msg.chat.id;
-    if (!(await isSubscribed(chatId, msg.from.id))) return;
+    const userId = msg.from.id;
+    if (!(await isSubscribed(chatId, userId))) return;
     
     if (!msg.document.file_name.endsWith('.txt')) {
         return;
+    }
+
+    if (activeBulkUsers.has(userId)) {
+        return bot.sendMessage(chatId, '⚠️ Anda masih memiliki proses bulk yang sedang berjalan. Harap tunggu hingga selesai.');
+    }
+
+    if (!checkLimit(userId, 'bulk')) {
+        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu hingga jam berikutnya.`, { parse_mode: 'HTML' });
     }
 
     bot.sendMessage(chatId, '📥 Mendownload file dan memulai pengecekan otomatis...');
@@ -299,23 +386,27 @@ bot.on('document', async (msg) => {
             return bot.sendMessage(chatId, 'File kosong atau tidak ada username yang valid.');
         }
 
-        bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username.\nSistem sedang memfilter ketersediaan...\n\n✨ <i>Kesempatan emas amankan username incaran Anda tanpa repot!</i>\n\n<i>(Pengecekan mungkin butuh sedikit waktu demi menghindari limit dari Telegram)</i>`, { parse_mode: 'HTML' });
+        activeBulkUsers.add(userId);
+        const progressMsg = await bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username. Mulai mengecek...\n⏳ Progress: 0 / ${usernames.length} (0%)`, { parse_mode: 'HTML' });
         
-        await processUsernames(chatId, usernames);
+        await processUsernames(chatId, usernames, progressMsg.message_id);
     } catch (error) {
         bot.sendMessage(chatId, `⚠️ Gagal memproses file: ${error.message}`);
+    } finally {
+        activeBulkUsers.delete(userId);
     }
 });
 
 // Handler Teks Biasa untuk Bulk (jika bukan command)
 bot.on('text', async (msg) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
     const text = msg.text;
 
     // Abaikan semua command yang diawali /
     if (text.startsWith('/')) return;
     
-    if (!(await isSubscribed(chatId, msg.from.id))) return;
+    if (!(await isSubscribed(chatId, userId))) return;
 
     // Memecah berdasarkan baris, koma, atau spasi
     const usernames = text.split(/[\n, ]+/)
@@ -324,12 +415,26 @@ bot.on('text', async (msg) => {
 
     if (usernames.length === 0) return;
 
-    bot.sendMessage(chatId, `🚀 Mulai memindai ${usernames.length} username...\n\n✨ <i>Duduk manis dan biarkan bot gratis ini bekerja mencarikan username terbaik untuk Anda!</i>`, { parse_mode: 'HTML' });
-    await processUsernames(chatId, usernames);
+    if (activeBulkUsers.has(userId)) {
+        return bot.sendMessage(chatId, '⚠️ Anda masih memiliki proses bulk yang sedang berjalan. Harap tunggu hingga selesai.');
+    }
+
+    if (!checkLimit(userId, 'bulk')) {
+        return bot.sendMessage(chatId, `⚠️ <b>Limit Tercapai!</b>\nAnda sudah mencapai batas maksimum bulk per jam (${LIMIT_BULK}x).\n\nSilakan tunggu hingga jam berikutnya.`, { parse_mode: 'HTML' });
+    }
+
+    activeBulkUsers.add(userId);
+    const progressMsg = await bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username. Mulai mengecek...\n⏳ Progress: 0 / ${usernames.length} (0%)`, { parse_mode: 'HTML' });
+    
+    try {
+        await processUsernames(chatId, usernames, progressMsg.message_id);
+    } finally {
+        activeBulkUsers.delete(userId);
+    }
 });
 
 // Fungsi inti untuk mengecek banyak username (Bulk)
-async function processUsernames(chatId, usernames) {
+async function processUsernames(chatId, usernames, progressMessageId) {
     let availableCount = 0;
     const availableList = [];
     const fragmentList = [];
@@ -357,6 +462,20 @@ async function processUsernames(chatId, usernames) {
                 } else {
                     fragmentList.push(`@${username} - Error saat cek Telegram`);
                 }
+            }
+        }
+
+        // Update Progress Bar setiap 5 username
+        if (progressMessageId && (i + 1) % 5 === 0) {
+            const percentage = Math.round(((i + 1) / usernames.length) * 100);
+            try {
+                await bot.editMessageText(`🚀 Ditemukan ${usernames.length} username. Mengecek...\n⏳ Progress: ${i + 1} / ${usernames.length} (${percentage}%)`, {
+                    chat_id: chatId,
+                    message_id: progressMessageId,
+                    parse_mode: 'HTML'
+                });
+            } catch (e) {
+                // Abaikan error "message is not modified"
             }
         }
 
