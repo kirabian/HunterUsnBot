@@ -350,44 +350,52 @@ bot.onText(/^\/watchlist$/, async (msg) => {
 });
 
 // Sistem Looping Latar Belakang (Patroli Watchlist) - Berjalan setiap 1 Jam (3600000 ms)
+let isWatchlistRunning = false;
 setInterval(async () => {
+    if (isWatchlistRunning) return;
+    
     const keys = Object.keys(watchlist);
     if (keys.length === 0) return;
     
-    console.log(`[Watchlist] Memulai patroli rutin untuk ${keys.length} username...`);
-    
-    for (const username of keys) {
-        try {
-            const status = await checkFragment(username);
-            let isAvailable = false;
-            
-            if (status === 'Not on Fragment') {
-                try {
-                    await bot.getChat(`@${username}`);
-                } catch (err) {
-                    if (err.response && err.response.statusCode === 400) {
-                        isAvailable = true;
+    isWatchlistRunning = true;
+    try {
+        console.log(`[Watchlist] Memulai patroli rutin untuk ${keys.length} username...`);
+        
+        for (const username of keys) {
+            try {
+                const status = await checkFragment(username);
+                let isAvailable = false;
+                
+                if (status === 'Not on Fragment') {
+                    try {
+                        await bot.getChat(`@${username}`);
+                    } catch (err) {
+                        if (err.response && err.response.statusCode === 400) {
+                            isAvailable = true;
+                        }
                     }
+                } else if (status === 'Available') {
+                    isAvailable = true;
                 }
-            } else if (status === 'Available') {
-                isAvailable = true;
-            }
 
-            if (isAvailable) {
-                const watchers = watchlist[username];
-                for (const userId of watchers) {
-                    bot.sendMessage(userId, `🚨 <b>JACKPOT HUNTER ALERT!</b> 🚨\n\nUsername <code>@${username}</code> saat ini berstatus <b>MURNI AVAILABLE</b>!\nSegera klaim sebelum diambil orang lain!`, { parse_mode: 'HTML' }).catch(()=>{});
+                if (isAvailable) {
+                    const watchers = watchlist[username];
+                    for (const userId of watchers) {
+                        bot.sendMessage(userId, `🚨 <b>JACKPOT HUNTER ALERT!</b> 🚨\n\nUsername <code>@${username}</code> saat ini berstatus <b>MURNI AVAILABLE</b>!\nSegera klaim sebelum diambil orang lain!`, { parse_mode: 'HTML' }).catch(()=>{});
+                    }
+                    // Hapus dari watchlist setelah ditemukan
+                    delete watchlist[username];
+                    saveWatchlist();
                 }
-                // Hapus dari watchlist setelah ditemukan
-                delete watchlist[username];
-                saveWatchlist();
+            } catch (e) {
+                console.error(`[Watchlist] Gagal mengecek @${username}:`, e.message);
             }
-        } catch (e) {
-            console.error(`[Watchlist] Gagal mengecek @${username}:`, e.message);
+            await delay(2000); // Delay antar cek untuk amankan API
         }
-        await delay(2000); // Delay antar cek untuk amankan API
+        console.log(`[Watchlist] Patroli selesai.`);
+    } finally {
+        isWatchlistRunning = false;
     }
-    console.log(`[Watchlist] Patroli selesai.`);
 }, 3600000);
 
 // Fitur Cek ID & Ping
@@ -536,6 +544,10 @@ bot.onText(/^\/cari (.+)/, async (msg, match) => {
     bot.sendMessage(chatId, `🔍 Mengecek ketersediaan @${username}...`);
     const fragmentStatus = await checkFragment(username);
 
+    if (fragmentStatus === 'Error checking Fragment') {
+        return bot.sendMessage(chatId, `⚠️ <b>Error:</b> Gagal mengecek status Fragment untuk @${username} (Server Fragment mungkin sedang melimit permintaan).\nSilakan coba lagi beberapa saat.`, { parse_mode: 'HTML' });
+    }
+
     if (isFragmentLikelyTaken(fragmentStatus)) {
         const reply = `❌ Username @${username} <b>TIDAK BISA DIPAKAI BEBAS</b>.\n💎 Status Fragment: <b>${fragmentStatus}</b>`;
         return bot.sendMessage(chatId, reply, {
@@ -640,7 +652,7 @@ bot.on('document', async (msg) => {
     const userId = msg.from.id;
     if (!(await isSubscribed(chatId, userId))) return;
     
-    if (!msg.document.file_name.endsWith('.txt')) {
+    if (!msg.document?.file_name?.endsWith('.txt')) {
         return;
     }
 
@@ -726,7 +738,9 @@ async function processUsernames(chatId, usernames, progressMessageId, userId) {
         const username = usernames[i];
         const fragmentStatus = await checkFragment(username);
 
-        if (isFragmentLikelyTaken(fragmentStatus)) {
+        if (fragmentStatus === 'Error checking Fragment') {
+            fragmentList.push(`@${username} - Error saat cek Fragment (terkena limit / down)`);
+        } else if (isFragmentLikelyTaken(fragmentStatus)) {
             fragmentList.push(`@${username} - ${fragmentStatus}`);
         } else {
             try {
