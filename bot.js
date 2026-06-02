@@ -73,14 +73,33 @@ async function checkFragment(username) {
     try {
         const response = await axios.get(`https://fragment.com/username/${username}`);
         const $ = cheerio.load(response.data);
-        const status = $('.tm-section-header-status').text().trim();
-        return status ? status : 'Unknown on Fragment';
+        const rawStatus = $('.tm-section-header-status').text().trim();
+
+        if (!rawStatus) {
+            return 'Unknown on Fragment';
+        }
+
+        const normalized = rawStatus.toLowerCase();
+        if (normalized.includes('not on fragment')) {
+            return 'Not on Fragment';
+        }
+        if (normalized.includes('available')) {
+            return 'Available';
+        }
+        return rawStatus;
     } catch (error) {
         if (error.response && error.response.status === 404) {
             return 'Not on Fragment';
         }
         return 'Error checking Fragment';
     }
+}
+
+function isFragmentLikelyTaken(fragmentStatus) {
+    return fragmentStatus !== 'Not on Fragment' &&
+           fragmentStatus !== 'Available' &&
+           fragmentStatus !== 'Unknown on Fragment' &&
+           fragmentStatus !== 'Error checking Fragment';
 }
 
 // ================= COMMANDS =================
@@ -171,16 +190,31 @@ bot.onText(/^\/cari (.+)/, async (msg, match) => {
     if (!username) return;
 
     bot.sendMessage(chatId, `🔍 Mengecek ketersediaan @${username}...`);
+    const fragmentStatus = await checkFragment(username);
+
+    if (isFragmentLikelyTaken(fragmentStatus)) {
+        const reply = `❌ Username @${username} <b>TIDAK BISA DIPAKAI BEBAS</b>.\n💎 Status Fragment: <b>${fragmentStatus}</b>`;
+        return bot.sendMessage(chatId, reply, {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '📱 Buka di Telegram', url: `https://t.me/${username}` },
+                        { text: '💎 Cek di Fragment', url: `https://fragment.com/username/${username}` }
+                    ]
+                ]
+            }
+        });
+    }
 
     try {
         await bot.getChat(`@${username}`);
-        const fragmentStatus = await checkFragment(username);
         let reply = `❌ Username @${username} <b>TIDAK BISA DIPAKAI BEBAS</b>.`;
         if (fragmentStatus !== 'Not on Fragment' && fragmentStatus !== 'Error checking Fragment') {
             reply += `\n💎 Tapi username ini ada di Fragment dengan status: <b>${fragmentStatus}</b>`;
         }
-        
-        bot.sendMessage(chatId, reply, { 
+
+        bot.sendMessage(chatId, reply, {
             parse_mode: 'HTML',
             reply_markup: {
                 inline_keyboard: [
@@ -194,38 +228,18 @@ bot.onText(/^\/cari (.+)/, async (msg, match) => {
 
     } catch (error) {
         if (error.response && error.response.statusCode === 400) {
-            const fragmentStatus = await checkFragment(username);
-            
-            if (fragmentStatus !== 'Not on Fragment' && fragmentStatus !== 'Unknown on Fragment' && fragmentStatus !== 'Error checking Fragment') {
-                let reply = `❌ Username @${username} <b>TIDAK BISA DIPAKAI BEBAS</b>.`;
-                reply += `\nℹ️ Ini adalah username premium/Fragment dengan status: <b>${fragmentStatus}</b>`;
-                
-                bot.sendMessage(chatId, reply, { 
-                    parse_mode: 'HTML',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [
-                                { text: '📱 Buka di Telegram', url: `https://t.me/${username}` },
-                                { text: '💎 Cek di Fragment', url: `https://fragment.com/username/${username}` }
-                            ]
+            const reply = `✅ Username @${username} <b>MURNI TERSEDIA</b> (Bisa diklaim)!`;
+            bot.sendMessage(chatId, reply, {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '📱 Buka di Telegram', url: `https://t.me/${username}` },
+                            { text: '💎 Cek di Fragment', url: `https://fragment.com/username/${username}` }
                         ]
-                    }
-                });
-            } else {
-                let reply = `✅ Username @${username} <b>MURNI TERSEDIA</b> (Bisa diklaim)!`;
-                
-                bot.sendMessage(chatId, reply, { 
-                    parse_mode: 'HTML',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [
-                                { text: '📱 Buka di Telegram', url: `https://t.me/${username}` },
-                                { text: '💎 Cek di Fragment', url: `https://fragment.com/username/${username}` }
-                            ]
-                        ]
-                    }
-                });
-            }
+                    ]
+                }
+            });
         } else if (error.response && error.response.statusCode === 429) {
             const retryAfter = error.response.body.parameters.retry_after || 10;
             bot.sendMessage(chatId, `⚠️ Bot sedang terkena limit! Coba lagi dalam ${retryAfter} detik.`);
@@ -303,34 +317,31 @@ async function processUsernames(chatId, usernames) {
 
     for (let i = 0; i < usernames.length; i++) {
         const username = usernames[i];
-        try {
-            await bot.getChat(`@${username}`);
-            
-            const fragmentStatus = await checkFragment(username);
-            if (fragmentStatus !== 'Not on Fragment' && fragmentStatus !== 'Error checking Fragment') {
-                fragmentList.push(`@${username} - ${fragmentStatus}`);
-            }
+        const fragmentStatus = await checkFragment(username);
 
-        } catch (error) {
-            if (error.response && error.response.statusCode === 400) {
-                const fragmentStatus = await checkFragment(username);
-                
-                if (fragmentStatus !== 'Not on Fragment' && fragmentStatus !== 'Unknown on Fragment' && fragmentStatus !== 'Error checking Fragment') {
-                    fragmentList.push(`@${username} - Kosong di TG, tapi di Fragment: ${fragmentStatus}`);
-                } else {
+        if (isFragmentLikelyTaken(fragmentStatus)) {
+            fragmentList.push(`@${username} - ${fragmentStatus}`);
+        } else {
+            try {
+                await bot.getChat(`@${username}`);
+                fragmentList.push(`@${username} - Terdaftar di Telegram${fragmentStatus === 'Available' ? `, Fragment status: ${fragmentStatus}` : ''}`);
+            } catch (error) {
+                if (error.response && error.response.statusCode === 400) {
                     availableList.push(`@${username} - ✅ MURNI AVAILABLE (Bisa diklaim)`);
                     availableCount++;
+                } else if (error.response && error.response.statusCode === 429) {
+                    const retryAfter = error.response.body?.parameters?.retry_after || 10;
+                    bot.sendMessage(chatId, `⚠️ Terkena limit Telegram API! Menunggu ${retryAfter} detik sebelum melanjutkan...`);
+                    await delay(retryAfter * 1000);
+                    i--; // Ulangi username ini
+                    continue;
+                } else {
+                    fragmentList.push(`@${username} - Error saat cek Telegram`);
                 }
-            } else if (error.response && error.response.statusCode === 429) {
-                const retryAfter = error.response.body.parameters.retry_after || 10;
-                bot.sendMessage(chatId, `⚠️ Terkena limit Telegram API! Menunggu ${retryAfter} detik sebelum melanjutkan...`);
-                await delay(retryAfter * 1000);
-                i--; // Ulangi username ini
-                continue;
             }
         }
 
-        // Delay 1.5 detik
+        // Delay 1.5 detik untuk menjaga rate limit Telegram
         await delay(1500);
     }
 
