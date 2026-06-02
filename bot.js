@@ -250,10 +250,29 @@ bot.onText(/^\/cari (.+)/, async (msg, match) => {
 });
 
 // Fitur Bulk / Panduan
-bot.onText(/^\/bulk$/, async (msg) => {
+bot.onText(/^\/bulk(?:\s+(.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
     if (!(await isSubscribed(chatId, msg.from.id))) return;
-    helpHandler(chatId);
+    
+    const text = match[1];
+    
+    // Jika hanya mengetik /bulk tanpa text tambahan, panggil help handler
+    if (!text) {
+        return helpHandler(chatId);
+    }
+
+    // Jika ada text tambahan, proses username-nya
+    const usernames = text.split(/[\n, ]+/) // Pisahkan berdasarkan baris baru, koma, atau spasi
+        .map(u => u.trim().replace(/@/g, '')) // Hapus spasi dan @
+        .filter(u => u.length > 0);
+
+    if (usernames.length === 0) {
+        return bot.sendMessage(chatId, 'Username tidak valid. Pisahkan dengan koma atau spasi.');
+    }
+
+    bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username.\nSistem sedang memfilter ketersediaan...\n\n✨ <i>Kesempatan emas amankan username incaran Anda tanpa repot!</i>\n\n<i>(Pengecekan mungkin butuh sedikit waktu demi menghindari limit dari Telegram)</i>`, { parse_mode: 'HTML' });
+    
+    await processUsernames(chatId, usernames);
 });
 
 // Handler File TXT untuk Bulk
