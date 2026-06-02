@@ -27,29 +27,57 @@ const dbPath = path.join(__dirname, 'users.json');
 let users = {};
 const activeBulkUsers = new Set();
 
+// API Fetch Harga TON
+async function getTonPrice() {
+    try {
+        const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=idr,usd');
+        return res.data['the-open-network']; // { idr: 123, usd: 5.5 }
+    } catch (e) {
+        return null;
+    }
+}
+
 if (fs.existsSync(dbPath)) {
     try {
         const data = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
         // Jika format lama (array), migrasikan ke format object
         if (Array.isArray(data)) {
             data.forEach(id => {
-                users[id] = { cariCount: 0, bulkCount: 0, lastHour: new Date().getHours() };
+                users[id] = { cariCount: 0, bulkCount: 0, lastHour: new Date().getHours(), bonusBulk: 0, referredBy: null };
             });
             fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
         } else {
             users = data;
+            // Pastikan properti baru ada
+            for (let id in users) {
+                if (users[id].bonusBulk === undefined) users[id].bonusBulk = 0;
+                if (users[id].referredBy === undefined) users[id].referredBy = null;
+            }
         }
     } catch (e) {
         users = {};
     }
 }
 
-function saveUser(userId) {
+function saveUser(userId, referrerId = null) {
     const currentHour = new Date().getHours();
     
     if (!users[userId]) {
-        users[userId] = { cariCount: 0, bulkCount: 0, lastHour: currentHour };
+        users[userId] = { 
+            cariCount: 0, 
+            bulkCount: 0, 
+            lastHour: currentHour, 
+            bonusBulk: 0, 
+            referredBy: referrerId 
+        };
         fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
+        
+        // Logika Referral: Jika ada referrer yang valid, beri dia bonus
+        if (referrerId && users[referrerId] && String(referrerId) !== String(userId)) {
+            users[referrerId].bonusBulk += 2;
+            fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
+            bot.sendMessage(referrerId, `🎉 <b>Selamat!</b>\nSatu teman baru saja menggunakan bot ini melalui link referral Anda.\n\nAnda mendapatkan <b>+2 kuota /bulk gratis</b> (berlaku permanen sampai digunakan)!`, { parse_mode: 'HTML' }).catch(()=>{});
+        }
     } else {
         // Reset limit jika jam sudah berbeda
         if (users[userId].lastHour !== currentHour) {
@@ -72,7 +100,15 @@ function checkLimit(userId, type) {
         if (user.cariCount >= LIMIT_CARI) return false;
         user.cariCount++;
     } else if (type === 'bulk') {
-        if (user.bulkCount >= LIMIT_BULK) return false;
+        if (user.bulkCount >= LIMIT_BULK) {
+            // Cek apakah punya bonus kuota referral
+            if (user.bonusBulk && user.bonusBulk > 0) {
+                user.bonusBulk--;
+                fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
+                return true;
+            }
+            return false;
+        }
         user.bulkCount++;
     }
     
@@ -146,13 +182,23 @@ function isFragmentLikelyTaken(fragmentStatus) {
 // ================= COMMANDS =================
 
 // Fitur Start
-bot.onText(/^\/start$/, async (msg) => {
+bot.onText(/^\/start(?: (.+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
     
     // Cek apakah user sudah subscribe
-    if (!(await isSubscribed(chatId, msg.from.id))) return;
+    if (!(await isSubscribed(chatId, userId))) return;
     
-    saveUser(msg.from.id);
+    // Logika Referral
+    let referrerId = null;
+    const startParam = match[1];
+    if (startParam && startParam.startsWith('ref_')) {
+        referrerId = startParam.split('_')[1];
+    }
+    
+    saveUser(userId, referrerId);
+    
+    const botUsername = (await bot.getMe()).username;
     
     const welcomeText = `👋 <b>Selamat datang di Bot Hunter USN Telegram!</b>\n\n` +
         `Bot pintar ini dibuat khusus untuk mempermudah Anda berburu username langka, unik, dan estetis secara massal dan otomatis.\n\n` +
@@ -164,7 +210,12 @@ bot.onText(/^\/start$/, async (msg) => {
         `<b>Mulai berburu sekarang dengan perintah berikut:</b>\n` +
         `🔍 /cari @username - Cek satu username\n` +
         `🚀 /bulk - Cek ratusan/ribuan username\n` +
-        `❓ /help - Panduan lengkap`;
+        `🆔 /id - Cek ID Telegram Anda\n` +
+        `🏓 /ping - Cek status bot\n` +
+        `❓ /help - Panduan lengkap\n\n` +
+        `🎁 <b>Dapatkan +2 Kuota Bulk Tambahan GRATIS!</b>\n` +
+        `Bagikan link referral Anda ke teman. Jika mereka menggunakan bot melalui link Anda, Anda berdua diuntungkan!\n` +
+        `👉 <code>https://t.me/${botUsername}?start=ref_${userId}</code>`;
         
     bot.sendMessage(chatId, welcomeText, { 
         parse_mode: 'HTML',
@@ -175,33 +226,56 @@ bot.onText(/^\/start$/, async (msg) => {
 });
 
 // Fitur Help
-const helpHandler = (chatId) => {
+const helpHandler = async (chatId, userId) => {
+    const botUsername = (await bot.getMe()).username;
     const helpText = `🛠 <b>Pusat Bantuan Bot Hunter USN</b>\n\n` +
         `<b>Cara Cek Satu Username:</b>\n` +
         `Ketik /cari nama_usn atau /cari @nama_usn\n\n` +
         `<b>Cara Cek Massal (Ratusan/Ribuan):</b>\n` +
-        `1. Langsung ketik daftar username di chat ini (boleh pakai koma, spasi, atau enter. Pakai @ atau tidak, bebas).\n` +
+        `1. Langsung ketik daftar username di chat ini (boleh pakai koma, spasi, atau enter).\n` +
         `2. <b>ATAU</b> Kirimkan file .txt berisi daftar username ke bot ini.\n\n` +
-        `<i>Bot akan otomatis menyeleksi mana yang murni bisa diklaim, dan mana yang berstatus Premium/Dijual di Fragment.</i>`;
+        `<b>🎁 Dapatkan Kuota Gratis (Referral)</b>\n` +
+        `Ajak teman Anda menggunakan bot ini via link di bawah, dan Anda akan mendapat tambahan +2 kuota Bulk!\n` +
+        `👉 <code>https://t.me/${botUsername}?start=ref_${userId}</code>`;
     bot.sendMessage(chatId, helpText, { parse_mode: 'HTML' });
 };
 
-bot.onText(/^\/help$/, (msg) => helpHandler(msg.chat.id));
+bot.onText(/^\/help$/, (msg) => helpHandler(msg.chat.id, msg.from.id));
 bot.on('callback_query', (query) => {
     if (query.data === 'help_btn') {
-        helpHandler(query.message.chat.id);
+        helpHandler(query.message.chat.id, query.from.id);
         bot.answerCallbackQuery(query.id);
     }
 });
 
+// Fitur Cek ID & Ping
+bot.onText(/^\/id$/, (msg) => {
+    bot.sendMessage(msg.chat.id, `🆔 ID Telegram Anda adalah: <code>${msg.from.id}</code>`, { parse_mode: 'HTML' });
+});
+
+bot.onText(/^\/ping$/, (msg) => {
+    const startTime = Date.now();
+    bot.sendMessage(msg.chat.id, '🏓 Pong!').then(sentMsg => {
+        const latency = Date.now() - startTime;
+        bot.editMessageText(`🏓 <b>Pong!</b>\nLatency: ${latency}ms`, {
+            chat_id: msg.chat.id,
+            message_id: sentMsg.message_id,
+            parse_mode: 'HTML'
+        });
+    });
+});
+
 // Fitur Admin: Stats
-bot.onText(/^\/stats$/, (msg) => {
+bot.onText(/^\/stats$/, async (msg) => {
     const chatId = msg.chat.id;
     if (String(msg.from.id) !== String(adminId)) return;
+    
+    bot.sendMessage(chatId, `⏳ Mengambil data statistik dan harga pasar...`);
     
     const totalUsers = Object.keys(users).length;
     let totalCariToday = 0;
     let totalBulkToday = 0;
+    let totalBonusBulk = 0;
     
     const currentHour = new Date().getHours();
     
@@ -210,13 +284,19 @@ bot.onText(/^\/stats$/, (msg) => {
             totalCariToday += users[key].cariCount;
             totalBulkToday += users[key].bulkCount;
         }
+        totalBonusBulk += users[key].bonusBulk || 0;
     }
     
+    const tonData = await getTonPrice();
+    const tonText = tonData ? `Rp ${tonData.idr.toLocaleString('id-ID')} / $${tonData.usd}` : `Gagal mengambil data`;
+    
     const statsText = `📊 <b>Statistik Bot</b>\n\n` +
-                      `👥 Total Pengguna: <b>${totalUsers}</b> user\n\n` +
+                      `👥 Total Pengguna: <b>${totalUsers}</b> user\n` +
+                      `🎁 Total Bonus Bulk Tersimpan: <b>${totalBonusBulk}</b>\n\n` +
                       `📈 <b>Aktivitas Jam Ini:</b>\n` +
                       `🔍 Pencarian Tunggal: ${totalCariToday} kali\n` +
-                      `📦 Pencarian Massal (Bulk): ${totalBulkToday} kali`;
+                      `📦 Pencarian Massal (Bulk): ${totalBulkToday} kali\n\n` +
+                      `🌐 <b>Kurs TON saat ini:</b> ${tonText}`;
                       
     bot.sendMessage(chatId, statsText, { parse_mode: 'HTML' });
 });
@@ -227,18 +307,22 @@ bot.onText(/^\/broadcast ([\s\S]+)/, async (msg, match) => {
     if (String(msg.from.id) !== String(adminId)) return;
     
     const message = match[1];
-    bot.sendMessage(chatId, `Mulai mengirim broadcast ke ${users.length} user...`);
+    const userIds = Object.keys(users); // Ambil semua ID user dari object
+    
+    bot.sendMessage(chatId, `Mulai mengirim broadcast ke ${userIds.length} user...`);
     
     let success = 0;
-    for (const u of users) {
+    for (const u of userIds) {
         try {
             await bot.sendMessage(u, `📢 <b>PENGUMUMAN</b>\n\n${message}`, { parse_mode: 'HTML' });
             success++;
             await delay(300); // Hindari limit broadcast
-        } catch (e) {}
+        } catch (e) {
+            // Abaikan jika user memblokir bot
+        }
     }
     
-    bot.sendMessage(chatId, `✅ Broadcast selesai!\nTerkirim ke: ${success}/${users.length} user.`);
+    bot.sendMessage(chatId, `✅ Broadcast selesai!\nTerkirim ke: ${success}/${userIds.length} user.`);
 });
 
 // Fitur Cari 1 Username
@@ -465,15 +549,26 @@ async function processUsernames(chatId, usernames, progressMessageId) {
             }
         }
 
-        // Update Progress Bar setiap 5 username
-        if (progressMessageId && (i + 1) % 5 === 0) {
+        // Update Progress Bar setiap 5 username atau jika mencapai username terakhir
+        if (progressMessageId && ((i + 1) % 5 === 0 || i === usernames.length - 1)) {
             const percentage = Math.round(((i + 1) / usernames.length) * 100);
+            
+            // Opsional: Bikin visual bar biar kelihatan makin pro
+            const totalBars = 10;
+            const filledBars = Math.round((percentage / 100) * totalBars);
+            const progressBar = '█'.repeat(filledBars) + '░'.repeat(totalBars - filledBars);
+
             try {
-                await bot.editMessageText(`🚀 Ditemukan ${usernames.length} username. Mengecek...\n⏳ Progress: ${i + 1} / ${usernames.length} (${percentage}%)`, {
-                    chat_id: chatId,
-                    message_id: progressMessageId,
-                    parse_mode: 'HTML'
-                });
+                await bot.editMessageText(
+                    `🚀 Ditemukan ${usernames.length} username. Mengecek...\n` +
+                    `⏳ Progress: [<code>${progressBar}</code>] <b>${i + 1} / ${usernames.length}</b> (${percentage}%)\n` +
+                    `🔥 Available sementara: <b>${availableCount}</b>`, 
+                    {
+                        chat_id: chatId,
+                        message_id: progressMessageId,
+                        parse_mode: 'HTML'
+                    }
+                );
             } catch (e) {
                 // Abaikan error "message is not modified"
             }
@@ -481,6 +576,10 @@ async function processUsernames(chatId, usernames, progressMessageId) {
 
         // Delay 1.5 detik untuk menjaga rate limit Telegram
         await delay(1500);
+    }
+
+    if (progressMessageId) {
+        await bot.deleteMessage(chatId, progressMessageId).catch(() => {});
     }
 
     // Laporan Akhir
@@ -502,7 +601,10 @@ async function processUsernames(chatId, usernames, progressMessageId) {
         reportContent += `(Tidak ada username yang taken)\n`;
     }
 
-    const caption = `🎉 <b>Proses Selesai!</b>\nDari total ${usernames.length} username, berhasil disaring <b>${availableCount} username</b> yang murni tersedia.\n\n✨ <i>Semoga dapet username idamanmu ya!</i>`;
+    const tonData = await getTonPrice();
+    const tonPriceText = tonData ? `\n\n🌐 <b>Kurs TON saat ini:</b> Rp ${tonData.idr.toLocaleString('id-ID')} / $${tonData.usd}` : '';
+
+    const caption = `🎉 <b>Proses Selesai!</b>\nDari total ${usernames.length} username, berhasil disaring <b>${availableCount} username</b> yang murni tersedia.\n\n✨ <i>Semoga dapet username idamanmu ya!</i>${tonPriceText}`;
 
     // Jika pesan kurang dari 4000 karakter, kirim sebagai teks biasa
     if (reportContent.length < 4000) {
