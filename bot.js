@@ -365,23 +365,43 @@ async function processUsernames(chatId, usernames) {
     }
 
     // Laporan Akhir
-    const reportPath = path.join(__dirname, `report_${chatId}_${Date.now()}.txt`);
     let reportContent = `=== HASIL PENGECEKAN USERNAME ===\n`;
     reportContent += `Total dicek: ${usernames.length}\n`;
     reportContent += `Total Available: ${availableCount}\n\n`;
 
     reportContent += `--- ✅ MURNI AVAILABLE (BISA DIKLAIM) ---\n`;
-    reportContent += availableList.join('\n') + '\n\n';
+    if (availableList.length > 0) {
+        reportContent += availableList.join('\n') + '\n\n';
+    } else {
+        reportContent += `(Tidak ada username yang murni available)\n\n`;
+    }
 
     reportContent += `--- 💎 TAKEN ATAU MASUK FRAGMENT ---\n`;
-    reportContent += fragmentList.join('\n') + '\n';
+    if (fragmentList.length > 0) {
+        reportContent += fragmentList.join('\n') + '\n';
+    } else {
+        reportContent += `(Tidak ada username yang taken)\n`;
+    }
 
-    fs.writeFileSync(reportPath, reportContent);
+    const caption = `🎉 <b>Proses Selesai!</b>\nDari total ${usernames.length} username, berhasil disaring <b>${availableCount} username</b> yang murni tersedia.\n\n✨ <i>Semoga dapet username idamanmu ya!</i>`;
 
-    await bot.sendDocument(chatId, reportPath, {
-        caption: `🎉 <b>Proses Selesai!</b>\nDari total ${usernames.length} username, berhasil disaring <b>${availableCount} username</b> yang murni tersedia.\n\n✨ <i>Semoga dapet username idamanmu ya! Manfaatkan fitur bot gratis ini kapan saja.</i>\n\nSilakan unduh dokumen laporan di atas untuk melihat detail lengkapnya.`,
-        parse_mode: 'HTML'
-    });
-
-    fs.unlinkSync(reportPath);
+    // Jika pesan kurang dari 4000 karakter, kirim sebagai teks biasa
+    if (reportContent.length < 4000) {
+        await bot.sendMessage(chatId, `${caption}\n\n<pre>${reportContent}</pre>`, { parse_mode: 'HTML' });
+    } else {
+        // Jika terlalu panjang, kita tetap kirim file txt sebagai backup, 
+        // tapi kita juga kirimkan teks summary (atau hanya list yang available saja di chat)
+        const availableText = availableList.join('\n');
+        if (availableText.length > 0 && availableText.length < 4000) {
+            await bot.sendMessage(chatId, `${caption}\n\n<b>Berikut yang AVAILABLE:</b>\n<pre>${availableText}</pre>`, { parse_mode: 'HTML' });
+        } else {
+            await bot.sendMessage(chatId, caption, { parse_mode: 'HTML' });
+        }
+        
+        // Kirim file txt sebagai pelengkap jika data sangat besar
+        const reportPath = path.join(__dirname, `report_${chatId}_${Date.now()}.txt`);
+        fs.writeFileSync(reportPath, reportContent);
+        await bot.sendDocument(chatId, reportPath, { caption: 'Hasil lengkap (karena teks terlalu panjang)' });
+        fs.unlinkSync(reportPath);
+    }
 }
