@@ -43,7 +43,7 @@ if (fs.existsSync(dbPath)) {
         // Jika format lama (array), migrasikan ke format object
         if (Array.isArray(data)) {
             data.forEach(id => {
-                users[id] = { cariCount: 0, bulkCount: 0, lastHour: new Date().getHours(), bonusBulk: 0, referredBy: null };
+                users[id] = { cariCount: 0, bulkCount: 0, lastHour: new Date().getHours(), bonusBulk: 0, referredBy: null, referralCount: 0, totalFound: 0 };
             });
             fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
         } else {
@@ -52,11 +52,34 @@ if (fs.existsSync(dbPath)) {
             for (let id in users) {
                 if (users[id].bonusBulk === undefined) users[id].bonusBulk = 0;
                 if (users[id].referredBy === undefined) users[id].referredBy = null;
+                if (users[id].lastHour === undefined) users[id].lastHour = new Date().getHours();
+                if (users[id].referralCount === undefined) users[id].referralCount = 0;
+                if (users[id].totalFound === undefined) users[id].totalFound = 0;
             }
         }
     } catch (e) {
         users = {};
     }
+} else {
+    // Jika file belum ada, buat file kosong
+    fs.writeFileSync(dbPath, JSON.stringify({}, null, 2));
+}
+
+const watchlistPath = path.join(__dirname, 'watchlist.json');
+let watchlist = {};
+
+if (fs.existsSync(watchlistPath)) {
+    try {
+        watchlist = JSON.parse(fs.readFileSync(watchlistPath, 'utf8'));
+    } catch (e) {
+        watchlist = {};
+    }
+} else {
+    fs.writeFileSync(watchlistPath, JSON.stringify({}, null, 2));
+}
+
+function saveWatchlist() {
+    fs.writeFileSync(watchlistPath, JSON.stringify(watchlist, null, 2));
 }
 
 function saveUser(userId, referrerId = null) {
@@ -68,13 +91,16 @@ function saveUser(userId, referrerId = null) {
             bulkCount: 0, 
             lastHour: currentHour, 
             bonusBulk: 0, 
-            referredBy: referrerId 
+            referredBy: referrerId,
+            referralCount: 0,
+            totalFound: 0
         };
         fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
         
         // Logika Referral: Jika ada referrer yang valid, beri dia bonus
         if (referrerId && users[referrerId] && String(referrerId) !== String(userId)) {
             users[referrerId].bonusBulk += 2;
+            users[referrerId].referralCount = (users[referrerId].referralCount || 0) + 1;
             fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
             bot.sendMessage(referrerId, `🎉 <b>Selamat!</b>\nSatu teman baru saja menggunakan bot ini melalui link referral Anda.\n\nAnda mendapatkan <b>+2 kuota /bulk gratis</b> (berlaku permanen sampai digunakan)!`, { parse_mode: 'HTML' }).catch(()=>{});
         }
@@ -248,6 +274,113 @@ bot.on('callback_query', (query) => {
     }
 });
 
+// Fitur Hunter Mode (Watchlist)
+bot.onText(/^\/watch (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = String(msg.from.id);
+    if (!(await isSubscribed(chatId, userId))) return;
+
+    let username = match[1].trim().replace(/@/g, '').toLowerCase();
+    
+    // Hitung berapa banyak yang sedang di-watch oleh user ini
+    let userWatchCount = 0;
+    for (const key in watchlist) {
+        if (watchlist[key].includes(userId)) userWatchCount++;
+    }
+
+    if (userWatchCount >= 5 && userId !== String(adminId)) {
+        return bot.sendMessage(chatId, `⚠️ <b>Batas Maksimal Tercapai!</b>\nAnda hanya dapat memantau maksimal 5 username secara bersamaan. Hapus beberapa username lama dengan /unwatch.`, { parse_mode: 'HTML' });
+    }
+
+    if (!watchlist[username]) {
+        watchlist[username] = [];
+    }
+    
+    if (!watchlist[username].includes(userId)) {
+        watchlist[username].push(userId);
+        saveWatchlist();
+        bot.sendMessage(chatId, `🎯 <b>Username Ditambahkan!</b>\nBot akan memantau <code>@${username}</code> setiap 1 jam.\nJika statusnya berubah menjadi Available, bot akan langsung mengirimkan notifikasi ke chat Anda!`, { parse_mode: 'HTML' });
+    } else {
+        bot.sendMessage(chatId, `⚠️ Anda sudah memantau <code>@${username}</code>.`, { parse_mode: 'HTML' });
+    }
+});
+
+bot.onText(/^\/unwatch (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = String(msg.from.id);
+    let username = match[1].trim().replace(/@/g, '').toLowerCase();
+
+    if (watchlist[username]) {
+        watchlist[username] = watchlist[username].filter(id => id !== userId);
+        if (watchlist[username].length === 0) {
+            delete watchlist[username];
+        }
+        saveWatchlist();
+        bot.sendMessage(chatId, `🗑️ <code>@${username}</code> berhasil dihapus dari daftar pantauan Anda.`, { parse_mode: 'HTML' });
+    } else {
+        bot.sendMessage(chatId, `⚠️ Anda tidak sedang memantau <code>@${username}</code>.`, { parse_mode: 'HTML' });
+    }
+});
+
+bot.onText(/^\/watchlist$/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = String(msg.from.id);
+
+    let list = [];
+    for (const key in watchlist) {
+        if (watchlist[key].includes(userId)) {
+            list.push(`- @${key}`);
+        }
+    }
+
+    if (list.length > 0) {
+        bot.sendMessage(chatId, `📋 <b>Daftar Pantauan Anda:</b>\n${list.join('\n')}\n\n<i>Gunakan /unwatch @username untuk menghapus.</i>`, { parse_mode: 'HTML' });
+    } else {
+        bot.sendMessage(chatId, `⚠️ Anda belum menambahkan username apa pun ke daftar pantauan.\nGunakan /watch @username_incaran untuk mulai memantau.`, { parse_mode: 'HTML' });
+    }
+});
+
+// Sistem Looping Latar Belakang (Patroli Watchlist) - Berjalan setiap 1 Jam (3600000 ms)
+setInterval(async () => {
+    const keys = Object.keys(watchlist);
+    if (keys.length === 0) return;
+    
+    console.log(`[Watchlist] Memulai patroli rutin untuk ${keys.length} username...`);
+    
+    for (const username of keys) {
+        try {
+            const status = await checkFragment(username);
+            let isAvailable = false;
+            
+            if (status === 'Not on Fragment') {
+                try {
+                    await bot.getChat(`@${username}`);
+                } catch (err) {
+                    if (err.response && err.response.statusCode === 400) {
+                        isAvailable = true;
+                    }
+                }
+            } else if (status === 'Available') {
+                isAvailable = true;
+            }
+
+            if (isAvailable) {
+                const watchers = watchlist[username];
+                for (const userId of watchers) {
+                    bot.sendMessage(userId, `🚨 <b>JACKPOT HUNTER ALERT!</b> 🚨\n\nUsername <code>@${username}</code> saat ini berstatus <b>MURNI AVAILABLE</b>!\nSegera klaim sebelum diambil orang lain!`, { parse_mode: 'HTML' }).catch(()=>{});
+                }
+                // Hapus dari watchlist setelah ditemukan
+                delete watchlist[username];
+                saveWatchlist();
+            }
+        } catch (e) {
+            console.error(`[Watchlist] Gagal mengecek @${username}:`, e.message);
+        }
+        await delay(2000); // Delay antar cek untuk amankan API
+    }
+    console.log(`[Watchlist] Patroli selesai.`);
+}, 3600000);
+
 // Fitur Cek ID & Ping
 bot.onText(/^\/id$/, (msg) => {
     bot.sendMessage(msg.chat.id, `🆔 ID Telegram Anda adalah: <code>${msg.from.id}</code>`, { parse_mode: 'HTML' });
@@ -265,38 +398,88 @@ bot.onText(/^\/ping$/, (msg) => {
     });
 });
 
+// Fitur Profil & Kuota (/me atau /myself)
+bot.onText(/^\/(me|myself)$/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    saveUser(userId); // Pastikan data ada dan sinkron
+    const user = users[userId];
+    const sisaCari = LIMIT_CARI - user.cariCount;
+    const sisaBulk = LIMIT_BULK - user.bulkCount;
+    const sisaBulkDisplay = sisaBulk < 0 ? 0 : sisaBulk;
+
+    const profileText = `👤 <b>Profil Hunter Anda</b>\n\n` +
+        `🆔 <b>ID Anda:</b> <code>${userId}</code>\n` +
+        `👥 <b>Total Referral:</b> ${user.referralCount || 0} orang\n` +
+        `💎 <b>Total Username Murni Ditemukan:</b> ${user.totalFound || 0}\n\n` +
+        `📊 <b>Sisa Kuota Jam Ini:</b>\n` +
+        `🔍 /cari: <b>${sisaCari}</b> dari ${LIMIT_CARI}\n` +
+        `🚀 /bulk: <b>${sisaBulkDisplay}</b> dari ${LIMIT_BULK}\n\n` +
+        `🎁 <b>Bonus Kuota Referral:</b> ${user.bonusBulk || 0} bulk\n\n` +
+        `<i>*Kuota akan keriset setiap jam. Bonus Referral bersifat permanen dan tidak akan keriset.</i>`;
+        
+    bot.sendMessage(chatId, profileText, { parse_mode: 'HTML' });
+});
+
 // Fitur Admin: Stats
 bot.onText(/^\/stats$/, async (msg) => {
     const chatId = msg.chat.id;
     if (String(msg.from.id) !== String(adminId)) return;
     
-    bot.sendMessage(chatId, `⏳ Mengambil data statistik dan harga pasar...`);
+    bot.sendMessage(chatId, `⏳ Mengambil data statistik, leaderboard, dan harga pasar...`);
     
-    const totalUsers = Object.keys(users).length;
+    const userKeys = Object.keys(users);
+    const totalUsers = userKeys.length;
     let totalCariToday = 0;
     let totalBulkToday = 0;
     let totalBonusBulk = 0;
+    let globalTotalFound = 0;
     
     const currentHour = new Date().getHours();
     
-    for (const key in users) {
-        if (users[key].lastHour === currentHour) {
-            totalCariToday += users[key].cariCount;
-            totalBulkToday += users[key].bulkCount;
+    // Arrays untuk sorting leaderboard
+    const allUsersList = [];
+    
+    for (const key of userKeys) {
+        const u = users[key];
+        if (u.lastHour === currentHour) {
+            totalCariToday += u.cariCount;
+            totalBulkToday += u.bulkCount;
         }
-        totalBonusBulk += users[key].bonusBulk || 0;
+        totalBonusBulk += u.bonusBulk || 0;
+        globalTotalFound += u.totalFound || 0;
+        
+        allUsersList.push({ id: key, referralCount: u.referralCount || 0, totalFound: u.totalFound || 0 });
     }
+    
+    // Sort Top 5 Referral
+    const topReferral = [...allUsersList].sort((a, b) => b.referralCount - a.referralCount).slice(0, 5);
+    // Sort Top 5 Hunter (totalFound)
+    const topHunter = [...allUsersList].sort((a, b) => b.totalFound - a.totalFound).slice(0, 5);
     
     const tonData = await getTonPrice();
     const tonText = tonData ? `Rp ${tonData.idr.toLocaleString('id-ID')} / $${tonData.usd}` : `Gagal mengambil data`;
     
-    const statsText = `📊 <b>Statistik Bot</b>\n\n` +
-                      `👥 Total Pengguna: <b>${totalUsers}</b> user\n` +
-                      `🎁 Total Bonus Bulk Tersimpan: <b>${totalBonusBulk}</b>\n\n` +
-                      `📈 <b>Aktivitas Jam Ini:</b>\n` +
-                      `🔍 Pencarian Tunggal: ${totalCariToday} kali\n` +
-                      `📦 Pencarian Massal (Bulk): ${totalBulkToday} kali\n\n` +
-                      `🌐 <b>Kurs TON saat ini:</b> ${tonText}`;
+    let statsText = `📊 <b>Statistik Global Bot</b>\n\n` +
+                    `👥 Total Pengguna: <b>${totalUsers}</b> user\n` +
+                    `💎 Total Murni Available (Sepanjang Masa): <b>${globalTotalFound}</b> username\n` +
+                    `🎁 Total Bonus Bulk Tersimpan: <b>${totalBonusBulk}</b>\n\n` +
+                    `📈 <b>Aktivitas Jam Ini:</b>\n` +
+                    `🔍 Pencarian Tunggal: ${totalCariToday} kali\n` +
+                    `📦 Pencarian Massal (Bulk): ${totalBulkToday} kali\n\n` +
+                    `🏆 <b>TOP 5 HUNTER (Username Ditemukan):</b>\n`;
+                    
+    topHunter.forEach((u, i) => {
+        if (u.totalFound > 0) statsText += `${i + 1}. <code>${u.id}</code> - ${u.totalFound} username\n`;
+    });
+    
+    statsText += `\n🏅 <b>TOP 5 INFLUENCER (Referral):</b>\n`;
+    topReferral.forEach((u, i) => {
+        if (u.referralCount > 0) statsText += `${i + 1}. <code>${u.id}</code> - ${u.referralCount} teman\n`;
+    });
+                    
+    statsText += `\n🌐 <b>Kurs TON saat ini:</b> ${tonText}`;
                       
     bot.sendMessage(chatId, statsText, { parse_mode: 'HTML' });
 });
@@ -407,7 +590,7 @@ bot.onText(/^\/bulk(?:\s+(.+))?$/, async (msg, match) => {
     
     // Jika hanya mengetik /bulk tanpa text tambahan, panggil help handler
     if (!text) {
-        return helpHandler(chatId);
+        return helpHandler(chatId, userId);
     }
 
     if (activeBulkUsers.has(userId)) {
@@ -431,7 +614,7 @@ bot.onText(/^\/bulk(?:\s+(.+))?$/, async (msg, match) => {
     const progressMsg = await bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username. Mulai mengecek...\n⏳ Progress: 0 / ${usernames.length} (0%)`, { parse_mode: 'HTML' });
     
     try {
-        await processUsernames(chatId, usernames, progressMsg.message_id);
+        await processUsernames(chatId, usernames, progressMsg.message_id, userId);
     } finally {
         activeBulkUsers.delete(userId);
     }
@@ -473,7 +656,7 @@ bot.on('document', async (msg) => {
         activeBulkUsers.add(userId);
         const progressMsg = await bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username. Mulai mengecek...\n⏳ Progress: 0 / ${usernames.length} (0%)`, { parse_mode: 'HTML' });
         
-        await processUsernames(chatId, usernames, progressMsg.message_id);
+        await processUsernames(chatId, usernames, progressMsg.message_id, userId);
     } catch (error) {
         bot.sendMessage(chatId, `⚠️ Gagal memproses file: ${error.message}`);
     } finally {
@@ -511,14 +694,14 @@ bot.on('text', async (msg) => {
     const progressMsg = await bot.sendMessage(chatId, `🚀 Ditemukan ${usernames.length} username. Mulai mengecek...\n⏳ Progress: 0 / ${usernames.length} (0%)`, { parse_mode: 'HTML' });
     
     try {
-        await processUsernames(chatId, usernames, progressMsg.message_id);
+        await processUsernames(chatId, usernames, progressMsg.message_id, userId);
     } finally {
         activeBulkUsers.delete(userId);
     }
 });
 
 // Fungsi inti untuk mengecek banyak username (Bulk)
-async function processUsernames(chatId, usernames, progressMessageId) {
+async function processUsernames(chatId, usernames, progressMessageId, userId) {
     let availableCount = 0;
     const availableList = [];
     const fragmentList = [];
@@ -580,6 +763,11 @@ async function processUsernames(chatId, usernames, progressMessageId) {
 
     if (progressMessageId) {
         await bot.deleteMessage(chatId, progressMessageId).catch(() => {});
+    }
+
+    if (userId && users[userId]) {
+        users[userId].totalFound = (users[userId].totalFound || 0) + availableCount;
+        fs.writeFileSync(dbPath, JSON.stringify(users, null, 2));
     }
 
     // Laporan Akhir
